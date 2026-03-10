@@ -25,20 +25,23 @@ ChartJS.register(
 
 function App() {
   const [projectKey, setProjectKey] = useState("");
-  const [issues, setIssues] = useState([]);
   const [boards, setBoards] = useState([]);
-  const [selectedBoard, setSelectedBoard] = useState(null);
   const [sprints, setSprints] = useState([]);
   const [selectedSprint, setSelectedSprint] = useState("");
+  const [selectedUser, setSelectedUser] = useState("");
+  const [issues, setIssues] = useState([]);
+  const [projectIssues, setProjectIssues] = useState([]);
+  const [analytics, setAnalytics] = useState(null);
 
   const storyPointsField = "customfield_10106";
 
-  // --- Helper functions ---
+  /* ---------------- Jira Context ---------------- */
   async function getProjectKey() {
     const context = await view.getContext();
     return context.extension.project.key;
   }
 
+  /* ---------------- API calls ---------------- */
   async function getBoards(projectKey) {
     return await invoke("getBoards", { projectKey });
   }
@@ -47,25 +50,25 @@ function App() {
     return await invoke("getSprints", { boardId });
   }
 
-  async function loadProjectIssues(key) {
-    return await invoke("getIssues", { projectKey: key });
-  }
-
-  async function loadSprintIssues(sprintId) {
+  async function getIssues(sprintId) {
     return await invoke("getIssues", { sprintId });
   }
 
+  async function getAnalytics(projectKey, sprintId) {
+    return await invoke("getBurnAnalytics", { projectKey, sprintId });
+  }
+
+  /* ---------------- Helpers ---------------- */
   function stripTime(date) {
-    if (!date) return null;
     const d = new Date(date);
     d.setHours(0, 0, 0, 0);
     return d;
   }
 
   function getSprintDates(sprint) {
-    if (!sprint?.startDate || !sprint?.endDate) return [];
+    if (!sprint?.startDate) return [];
     const start = stripTime(sprint.startDate);
-    const end = stripTime(sprint.endDate);
+    const end = stripTime(sprint.endDate || new Date());
     const dates = [];
     for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
       dates.push(new Date(d));
@@ -73,173 +76,202 @@ function App() {
     return dates;
   }
 
-  function computeActualBurndown(issues, sprintDates) {
-    return sprintDates.map(date => {
-      let remaining = 0;
+  function buildProjectTimeline(issues, spField) {
+    const events = [];
 
-      issues.forEach(issue => {
-        const sp = issue.fields?.[storyPointsField] || 0;
+    issues.forEach((issue) => {
+      const created = new Date(issue.fields.created);
+      const sp = issue.fields?.[spField] || 0;
 
-        // Get Done transitions using statusCategory
-        const doneTransitions = issue.changelog?.histories?.flatMap(h => h.items)
-          .filter(item => item.field === "status" && item.toStatus?.statusCategory?.key === "done")
-          .map(item => stripTime(item.created))
-          .filter(Boolean);
+      events.push({ date: created, type: "add", value: sp });
 
-        const firstDoneDate = doneTransitions?.length
-          ? doneTransitions.sort((a, b) => a.getTime() - b.getTime())[0]
-          : null;
-
-        if (!firstDoneDate || firstDoneDate > date) {
-          remaining += sp;
-        }
+      issue.changelog?.histories?.forEach((h) => {
+        const date = new Date(h.created);
+        h.items.forEach((item) => {
+          if (item.field === "Story Points") {
+            const oldVal = Number(item.fromString) || 0;
+            const newVal = Number(item.toString) || 0;
+            events.push({ date, type: "sp-change", value: newVal - oldVal });
+          }
+          if (item.field === "status" && item.toString === "Done") {
+            events.push({ date, type: "complete", value: sp });
+          }
+          if (item.field === "status" && item.fromString === "Done") {
+            events.push({ date, type: "reopen", value: sp });
+          }
+        });
       });
-
-      return remaining;
     });
+
+    return events.sort((a, b) => a.date - b.date);
   }
 
-  // --- Effects ---
+  function computeBurndown(issues, spField) {
+    if (!issues.length) return { labels: [], data: [] };
+    const timeline = buildProjectTimeline(issues, spField);
 
-  // Load project key & initial issues
+    const start = new Date(Math.min(...issues.map((i) => new Date(i.fields.created))));
+    const end = new Date();
+
+    const labels = [];
+    const data = [];
+
+    let remainingPoints = 0;
+
+    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+      timeline
+        .filter((e) => new Date(e.date).toDateString() === d.toDateString())
+        .forEach((e) => {
+          if (e.type === "add" || e.type === "sp-change") remainingPoints += e.value;
+          if (e.type === "complete") remainingPoints -= e.value;
+          if (e.type === "reopen") remainingPoints += e.value;
+        });
+      labels.push(d.toISOString().split("T")[0]);
+      data.push(Math.max(remainingPoints, 0));
+    }
+
+    return { labels, data };
+  }
+
+  /* ---------------- Init project ---------------- */
   useEffect(() => {
-    async function initProject() {
+    async function init() {
       const key = await getProjectKey();
       setProjectKey(key);
 
-      const projectIssueList = await loadProjectIssues(key);
-      setIssues(projectIssueList);
-    }
-    initProject();
-  }, []);
-
-  // Load boards + sprints
-  useEffect(() => {
-    if (!projectKey) return;
-
-    async function initBoardsAndSprints() {
-      const boardList = await getBoards(projectKey);
+      const boardList = await getBoards(key);
       setBoards(boardList);
 
-      if (boardList.length > 0) {
-        const firstBoardId = boardList[0].id;
-        setSelectedBoard(firstBoardId);
-
-        let sprintList = await getSprints(firstBoardId);
-        sprintList.sort((a, b) => {
-          if (!a.startDate) return 1;
-          if (!b.startDate) return -1;
-          return new Date(a.startDate) - new Date(b.startDate);
-        });
-
+      if (boardList.length) {
+        const sprintList = await getSprints(boardList[0].id);
         setSprints(sprintList);
-        if (sprintList.length > 0) {
-          setSelectedSprint(sprintList[0].id.toString());
-        }
+        if (sprintList.length) setSelectedSprint(sprintList[0].id.toString());
       }
     }
+    init();
+  }, []);
 
-    initBoardsAndSprints();
-  }, [projectKey]);
-
-  // Load issues when sprint changes
+  /* ---------------- Load sprint data ---------------- */
   useEffect(() => {
     if (!selectedSprint) return;
 
-    async function fetchSprintIssues() {
-      const sprintIssueList = await loadSprintIssues(selectedSprint);
-      setIssues(sprintIssueList);
+    async function loadData() {
+      const sprintIssues = await getIssues(selectedSprint);
+      setIssues(sprintIssues);
+
+      const projectAll = await invoke("getIssues", { projectKey });
+      setProjectIssues(projectAll);
+
+      const data = await getAnalytics(projectKey, selectedSprint);
+      setAnalytics(data);
+
+      if (data?.memberBurnSprint) {
+        const users = Object.keys(data.memberBurnSprint);
+        if (users.length && !selectedUser) setSelectedUser(users[0]);
+      }
     }
 
-    fetchSprintIssues();
-  }, [selectedSprint]);
+    loadData();
+  }, [selectedSprint, projectKey]);
 
-  // --- Compute burndown data ---
-  const totalStoryPoints = issues.reduce(
-    (sum, issue) => sum + (issue.fields?.[storyPointsField] || 0),
-    0
-  );
-
-  const currentSprint = sprints.find(s => s.id.toString() === selectedSprint);
-  const sprintDates = getSprintDates(currentSprint).filter(d => {
-    const day = d.getDay();
-    return day !== 0 && day !== 6; // skip weekends
-  });
-
-  const labels = sprintDates.map(d => d.toISOString().split("T")[0]);
-
-  const idealData = sprintDates.map((_, i) =>
-    totalStoryPoints * (1 - i / (sprintDates.length - 1))
-  );
-
-  const actualData = computeActualBurndown(issues, sprintDates);
-
-  // Debug logs
-  console.log("Labels:", labels);
-  console.log("Ideal data:", idealData);
-  console.log("Actual data:", actualData);
-  issues.forEach(issue => {
-    console.log(issue.key, "SP:", issue.fields?.[storyPointsField], "Done transitions:", issue.changelog?.histories?.map(h => h.items));
-  });
-
-  const chartData = {
-    labels,
+  /* ---------------- Project Burndown Chart ---------------- */
+  const projectSeries = computeBurndown(projectIssues, storyPointsField);
+  const projectBurndownChart = {
+    labels: projectSeries.labels,
     datasets: [
       {
-        label: "Actual Story Points Remaining",
-        data: actualData,
-        borderColor: "rgb(54, 162, 235)",
-        backgroundColor: "rgba(54, 162, 235, 0.2)",
+        label: "Project Remaining Story Points",
+        data: projectSeries.data,
+        borderColor: "rgb(54,162,235)",
         tension: 0.3
-      },
-      {
-        label: "Ideal Burndown",
-        data: idealData,
-        borderColor: "rgb(255, 99, 132)",
-        borderDash: [5, 5],
-        fill: false
       }
     ]
   };
 
-  const chartOptions = {
-    responsive: true,
-    plugins: {
-      legend: { position: "top" },
-      title: { display: true, text: "Sprint Burndown" }
-    }
-  };
+  /* ---------------- Sprint Burndown (Team) ---------------- */
+  const sprintDates = getSprintDates(sprints.find((s) => s.id.toString() === selectedSprint));
+  const teamBurndownChart = analytics
+    ? {
+        labels: sprintDates.map((d) => d.toISOString().split("T")[0]),
+        datasets: [
+          {
+            label: "Team Sprint Burndown",
+            data: sprintDates.map((_, i) => {
+              const total = Object.values(analytics.memberBurnSprint || {}).reduce((a, b) => a + b, 0);
+              const ideal = analytics.teamAverageSprintBurn || 0;
+              return Math.max(total - (i * total) / (sprintDates.length - 1), 0);
+            }),
+            borderColor: "rgb(255,99,132)",
+            tension: 0.3
+          }
+        ]
+      }
+    : null;
 
+  /* ---------------- Developer Burndown ---------------- */
+  const developerBurndownChart = analytics && selectedUser
+    ? {
+        labels: sprintDates.map((d) => d.toISOString().split("T")[0]),
+        datasets: [
+          {
+            label: selectedUser,
+            data: sprintDates.map((_, i) => {
+              const total = analytics.memberBurnSprint[selectedUser] || 0;
+              const avg = analytics.memberAverageSprintBurn[selectedUser] || 0;
+              return Math.max(total - (i * total) / (sprintDates.length - 1), 0);
+            }),
+            borderColor: "rgb(75,192,192)",
+            tension: 0.3
+          }
+        ]
+      }
+    : null;
+
+  /* ---------------- UI ---------------- */
   return (
     <div style={{ padding: "20px", fontFamily: "Arial" }}>
-      <h2>Jira Sprint Burndown</h2>
-
+      <h2>Project Analytics Dashboard</h2>
       <p><b>Project:</b> {projectKey}</p>
-      <p><b>Number of issues:</b> {issues.length}</p>
 
+      {/* Project Burndown */}
+      <h3>Project Burndown</h3>
+      {projectBurndownChart && <div style={{ width: "750px" }}><Line data={projectBurndownChart} /></div>}
+
+      <br/>
+
+      {/* Sprint selector below project burndown */}
       {sprints.length > 0 && (
-        <div style={{ marginBottom: "20px" }}>
-          <label><b>Select Sprint:</b></label>
-          <br />
-          <select
-            value={selectedSprint}
-            onChange={(e) => setSelectedSprint(e.target.value)}
-          >
-            <option value="">-- Select a Sprint --</option>
-            {sprints.map((sprint) => (
-              <option key={sprint.id} value={sprint.id}>
-                {sprint.name}
-              </option>
+        <div>
+          <label><b>Select Sprint:</b></label><br/>
+          <select value={selectedSprint} onChange={(e) => setSelectedSprint(e.target.value)}>
+            {sprints.map((s) => (
+              <option key={s.id} value={s.id}>{s.name}</option>
             ))}
           </select>
         </div>
       )}
 
-      {issues.length > 0 && (
-        <div style={{ width: "700px" }}>
-          <Line data={chartData} options={chartOptions} />
+      <br/>
+
+      {/* Team Sprint Burndown */}
+      <h3>Team Sprint Burndown</h3>
+      {teamBurndownChart && <div style={{ width: "750px" }}><Line data={teamBurndownChart} /></div>}
+
+      <br/>
+
+      {/* Developer Burndown */}
+      <h3>Developer Burndown</h3>
+      {analytics?.memberBurnSprint && (
+        <div>
+          <label><b>Select Developer:</b></label><br/>
+          <select value={selectedUser} onChange={(e) => setSelectedUser(e.target.value)}>
+            {Object.keys(analytics.memberBurnSprint).map((user) => (
+              <option key={user} value={user}>{user}</option>
+            ))}
+          </select>
         </div>
       )}
+      {developerBurndownChart && <div style={{ width: "750px" }}><Line data={developerBurndownChart} /></div>}
     </div>
   );
 }
