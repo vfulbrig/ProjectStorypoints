@@ -16,6 +16,11 @@ permissions:
   scopes:
     - read:jira-work
     - read:jira-user
+    - read:sprint:jira-software
+    - read:issue-details:jira
+    - read:jql:jira
+    - read:board-scope:jira-software
+    - read:project:jira
 app:
   runtime:
     name: nodejs24.x

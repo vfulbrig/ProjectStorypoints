@@ -1,76 +1,201 @@
-import React, { useEffect, useState } from "react";
+import React, { useState, useEffect } from "react";
 import { view, invoke } from "@forge/bridge";
+import { Line } from "react-chartjs-2";
+
+import {
+  Chart as ChartJS,
+  LineElement,
+  PointElement,
+  LinearScale,
+  CategoryScale,
+  Title,
+  Tooltip,
+  Legend
+} from "chart.js";
+
+ChartJS.register(
+  LineElement,
+  PointElement,
+  LinearScale,
+  CategoryScale,
+  Title,
+  Tooltip,
+  Legend
+);
 
 function App() {
 
-  // React state variables
+  // --- State variables ---
   const [projectKey, setProjectKey] = useState("");
   const [issues, setIssues] = useState([]);
+  const [boards, setBoards] = useState([]);
+  const [selectedBoard, setSelectedBoard] = useState(null);
+  const [sprints, setSprints] = useState([]);
+  const [selectedSprint, setSelectedSprint] = useState("");
 
-  /*
-  Get the project key from Jira
-  */
+  const storyPointsField = "customfield_10106";
+
+  // --- Helper functions ---
   async function getProjectKey() {
-
     const context = await view.getContext();
-
     return context.extension.project.key;
   }
 
-  /*
-  Load issues from the backend
-  */
-  async function loadIssues(key) {
-
-    const result = await invoke("getIssues", {
-      projectKey: key
-    });
-
-    return result;
+  async function getBoards(projectKey) {
+    return await invoke("getBoards", { projectKey });
   }
 
-  /*
-  Run this code when the page loads
-  */
-  useEffect(() => {
+  async function getSprints(boardId) {
+    return await invoke("getSprints", { boardId });
+  }
 
-    async function start() {
+  async function loadProjectIssues(key) {
+    return await invoke("getIssues", { projectKey: key });
+  }
+
+  async function loadSprintIssues(sprintId) {
+    return await invoke("getIssues", { sprintId });
+  }
+
+  // --- Effects ---
+
+  // 1️⃣ Load project key and initial issues
+  useEffect(() => {
+    async function initProject() {
 
       const key = await getProjectKey();
-
-      console.log("Project key:", key);
-
       setProjectKey(key);
 
-      const issueList = await loadIssues(key);
+      const projectIssueList = await loadProjectIssues(key);
+      setIssues(projectIssueList);
 
-      console.log("Issues:", issueList);
-
-      setIssues(issueList);
     }
 
-    start();
-
+    initProject();
   }, []);
 
-  /*
-  Render the page
-  */
+  // 2️⃣ Load boards + sprints
+  useEffect(() => {
+
+    if (!projectKey) return;
+
+    async function initBoardsAndSprints() {
+
+      const boardList = await getBoards(projectKey);
+      setBoards(boardList);
+
+      if (boardList.length > 0) {
+
+        const firstBoardId = boardList[0].id;
+        setSelectedBoard(firstBoardId);
+
+        const sprintList = await getSprints(firstBoardId);
+		sprintList.sort((a, b) => {
+		  if (!a.startDate) return 1; // put sprints without startDate at the end
+		  if (!b.startDate) return -1;
+		  return new Date(a.startDate) - new Date(b.startDate);
+		});
+        setSprints(sprintList);
+
+      }
+
+    }
+
+    initBoardsAndSprints();
+
+  }, [projectKey]);
+
+  // 3️⃣ Load issues when sprint changes
+  useEffect(() => {
+
+    if (!selectedSprint) return;
+
+    async function fetchSprintIssues() {
+
+      const sprintIssueList = await loadSprintIssues(selectedSprint);
+      setIssues(sprintIssueList);
+
+    }
+
+    fetchSprintIssues();
+
+  }, [selectedSprint]);
+
+  // --- Compute burndown data ---
+
+  const totalStoryPoints = issues.reduce(
+    (sum, issue) => sum + (issue.fields?.[storyPointsField] || 0),
+    0
+  );
+
+  const chartData = {
+    labels: ["Day 1", "Day 2", "Day 3", "Day 4", "Day 5"],
+    datasets: [
+      {
+        label: "Story Points Remaining",
+        data: [
+          totalStoryPoints,
+          totalStoryPoints * 0.8,
+          totalStoryPoints * 0.5,
+          totalStoryPoints * 0.3,
+          0
+        ],
+        borderColor: "rgb(54, 162, 235)",
+        backgroundColor: "rgba(54, 162, 235, 0.2)",
+        tension: 0.3
+      }
+    ]
+  };
+
+  const chartOptions = {
+    responsive: true,
+    plugins: {
+      legend: {
+        position: "top"
+      },
+      title: {
+        display: true,
+        text: "Sprint Burndown"
+      }
+    }
+  };
+
+  // --- Render ---
   return (
 
-    <div>
+    <div style={{ padding: "20px", fontFamily: "Arial" }}>
 
-      <h1>Burndown Reports</h1>
+      <h2>Jira Sprint Burndown</h2>
 
-      <p>Project: {projectKey}</p>
+      <p><b>Project:</b> {projectKey}</p>
+      <p><b>Number of issues:</b> {issues.length}</p>
 
-      <p>Number of issues: {issues.length}</p>
+      {sprints.length > 0 && (
+        <div style={{ marginBottom: "20px" }}>
+          <label><b>Select Sprint:</b></label>
+          <br />
 
-      <h3>Issue Data</h3>
+          <select
+            value={selectedSprint}
+            onChange={(e) => setSelectedSprint(e.target.value)}
+          >
+            <option value="">-- Select a Sprint --</option>
 
-      <pre>
-        {JSON.stringify(issues, null, 2)}
-      </pre>
+            {sprints.map((sprint) => (
+              <option key={sprint.id} value={sprint.id}>
+                {sprint.name}
+              </option>
+            ))}
+
+          </select>
+        </div>
+      )}
+
+      {issues.length > 0 && (
+        <div style={{ width: "700px" }}>
+          <Line data={chartData} options={chartOptions} />
+        </div>
+      )}
 
     </div>
 
