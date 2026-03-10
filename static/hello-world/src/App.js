@@ -91,10 +91,10 @@ function App() {
 
         const sprintList = await getSprints(firstBoardId);
 		sprintList.sort((a, b) => {
-		  if (!a.startDate) return 1; // put sprints without startDate at the end
-		  if (!b.startDate) return -1;
-		  return new Date(a.startDate) - new Date(b.startDate);
-		});
+	  if (!a.startDate) return 1; // put sprints without startDate at the end
+	  if (!b.startDate) return -1;
+	  return new Date(a.startDate) - new Date(b.startDate);
+	});
         setSprints(sprintList);
 
       }
