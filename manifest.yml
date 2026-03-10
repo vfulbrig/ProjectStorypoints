@@ -1,0 +1,24 @@
+modules:
+  jira:projectPage:
+    - key: project-storypoints-hello-world-page
+      resource: main
+      resolver:
+        function: resolver
+      title: Project Storypoints
+  function:
+    - key: resolver
+      handler: index.handler
+resources:
+  - key: main
+    path: static/hello-world/build
+    
+permissions:
+  scopes:
+    - read:jira-work
+    - read:jira-user
+app:
+  runtime:
+    name: nodejs24.x
+    memoryMB: 256
+    architecture: arm64
+  id: ari:cloud:ecosystem::app/a4557474-6149-4c54-900f-386d3da382b1
