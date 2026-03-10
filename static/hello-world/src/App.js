@@ -24,8 +24,6 @@ ChartJS.register(
 );
 
 function App() {
-
-  // --- State variables ---
   const [projectKey, setProjectKey] = useState("");
   const [issues, setIssues] = useState([]);
   const [boards, setBoards] = useState([]);
@@ -57,92 +55,149 @@ function App() {
     return await invoke("getIssues", { sprintId });
   }
 
+  function stripTime(date) {
+    if (!date) return null;
+    const d = new Date(date);
+    d.setHours(0, 0, 0, 0);
+    return d;
+  }
+
+  function getSprintDates(sprint) {
+    if (!sprint?.startDate || !sprint?.endDate) return [];
+    const start = stripTime(sprint.startDate);
+    const end = stripTime(sprint.endDate);
+    const dates = [];
+    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+      dates.push(new Date(d));
+    }
+    return dates;
+  }
+
+  function computeActualBurndown(issues, sprintDates) {
+    return sprintDates.map(date => {
+      let remaining = 0;
+
+      issues.forEach(issue => {
+        const sp = issue.fields?.[storyPointsField] || 0;
+
+        // Get Done transitions using statusCategory
+        const doneTransitions = issue.changelog?.histories?.flatMap(h => h.items)
+          .filter(item => item.field === "status" && item.toStatus?.statusCategory?.key === "done")
+          .map(item => stripTime(item.created))
+          .filter(Boolean);
+
+        const firstDoneDate = doneTransitions?.length
+          ? doneTransitions.sort((a, b) => a.getTime() - b.getTime())[0]
+          : null;
+
+        if (!firstDoneDate || firstDoneDate > date) {
+          remaining += sp;
+        }
+      });
+
+      return remaining;
+    });
+  }
+
   // --- Effects ---
 
-  // 1️⃣ Load project key and initial issues
+  // Load project key & initial issues
   useEffect(() => {
     async function initProject() {
-
       const key = await getProjectKey();
       setProjectKey(key);
 
       const projectIssueList = await loadProjectIssues(key);
       setIssues(projectIssueList);
-
     }
-
     initProject();
   }, []);
 
-  // 2️⃣ Load boards + sprints
+  // Load boards + sprints
   useEffect(() => {
-
     if (!projectKey) return;
 
     async function initBoardsAndSprints() {
-
       const boardList = await getBoards(projectKey);
       setBoards(boardList);
 
       if (boardList.length > 0) {
-
         const firstBoardId = boardList[0].id;
         setSelectedBoard(firstBoardId);
 
-        const sprintList = await getSprints(firstBoardId);
-		sprintList.sort((a, b) => {
-	  if (!a.startDate) return 1; // put sprints without startDate at the end
-	  if (!b.startDate) return -1;
-	  return new Date(a.startDate) - new Date(b.startDate);
-	});
+        let sprintList = await getSprints(firstBoardId);
+        sprintList.sort((a, b) => {
+          if (!a.startDate) return 1;
+          if (!b.startDate) return -1;
+          return new Date(a.startDate) - new Date(b.startDate);
+        });
+
         setSprints(sprintList);
-
+        if (sprintList.length > 0) {
+          setSelectedSprint(sprintList[0].id.toString());
+        }
       }
-
     }
 
     initBoardsAndSprints();
-
   }, [projectKey]);
 
-  // 3️⃣ Load issues when sprint changes
+  // Load issues when sprint changes
   useEffect(() => {
-
     if (!selectedSprint) return;
 
     async function fetchSprintIssues() {
-
       const sprintIssueList = await loadSprintIssues(selectedSprint);
       setIssues(sprintIssueList);
-
     }
 
     fetchSprintIssues();
-
   }, [selectedSprint]);
 
   // --- Compute burndown data ---
-
   const totalStoryPoints = issues.reduce(
     (sum, issue) => sum + (issue.fields?.[storyPointsField] || 0),
     0
   );
 
+  const currentSprint = sprints.find(s => s.id.toString() === selectedSprint);
+  const sprintDates = getSprintDates(currentSprint).filter(d => {
+    const day = d.getDay();
+    return day !== 0 && day !== 6; // skip weekends
+  });
+
+  const labels = sprintDates.map(d => d.toISOString().split("T")[0]);
+
+  const idealData = sprintDates.map((_, i) =>
+    totalStoryPoints * (1 - i / (sprintDates.length - 1))
+  );
+
+  const actualData = computeActualBurndown(issues, sprintDates);
+
+  // Debug logs
+  console.log("Labels:", labels);
+  console.log("Ideal data:", idealData);
+  console.log("Actual data:", actualData);
+  issues.forEach(issue => {
+    console.log(issue.key, "SP:", issue.fields?.[storyPointsField], "Done transitions:", issue.changelog?.histories?.map(h => h.items));
+  });
+
   const chartData = {
-    labels: ["Day 1", "Day 2", "Day 3", "Day 4", "Day 5"],
+    labels,
     datasets: [
       {
-        label: "Story Points Remaining",
-        data: [
-          totalStoryPoints,
-          totalStoryPoints * 0.8,
-          totalStoryPoints * 0.5,
-          totalStoryPoints * 0.3,
-          0
-        ],
+        label: "Actual Story Points Remaining",
+        data: actualData,
         borderColor: "rgb(54, 162, 235)",
         backgroundColor: "rgba(54, 162, 235, 0.2)",
         tension: 0.3
+      },
+      {
+        label: "Ideal Burndown",
+        data: idealData,
+        borderColor: "rgb(255, 99, 132)",
+        borderDash: [5, 5],
+        fill: false
       }
     ]
   };
@@ -150,21 +205,13 @@ function App() {
   const chartOptions = {
     responsive: true,
     plugins: {
-      legend: {
-        position: "top"
-      },
-      title: {
-        display: true,
-        text: "Sprint Burndown"
-      }
+      legend: { position: "top" },
+      title: { display: true, text: "Sprint Burndown" }
     }
   };
 
-  // --- Render ---
   return (
-
     <div style={{ padding: "20px", fontFamily: "Arial" }}>
-
       <h2>Jira Sprint Burndown</h2>
 
       <p><b>Project:</b> {projectKey}</p>
@@ -174,19 +221,16 @@ function App() {
         <div style={{ marginBottom: "20px" }}>
           <label><b>Select Sprint:</b></label>
           <br />
-
           <select
             value={selectedSprint}
             onChange={(e) => setSelectedSprint(e.target.value)}
           >
             <option value="">-- Select a Sprint --</option>
-
             {sprints.map((sprint) => (
               <option key={sprint.id} value={sprint.id}>
                 {sprint.name}
               </option>
             ))}
-
           </select>
         </div>
       )}
@@ -196,9 +240,7 @@ function App() {
           <Line data={chartData} options={chartOptions} />
         </div>
       )}
-
     </div>
-
   );
 }
 

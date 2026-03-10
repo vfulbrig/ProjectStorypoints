@@ -3,81 +3,97 @@ import api, { route } from '@forge/api';
 
 const resolver = new Resolver();
 
-/*
-Trying to get issues here!
-*/
-resolver.define("getIssues", async ({ payload }) => {
-  const { projectKey, sprintId } = payload; // accept sprintId optionally
+// --- Utility: call Jira API as app ---
+async function callJiraAsApp(url) {
+  try {
+    const response = await api.asApp().requestJira(url);
+    const text = await response.text(); // read body only once
 
-  let response;
+    if (!response.ok) {
+      console.error("Jira API error:", text);
+      return null;
+    }
+    return JSON.parse(text);
+  } catch (err) {
+    console.error("Exception calling Jira API:", err);
+    return null;
+  }
+}
+
+// --- Utility: call Jira API as current user ---
+async function callJiraAsUser(url) {
+  try {
+    const response = await api.asUser().requestJira(url);
+    const text = await response.text();
+
+    if (!response.ok) {
+      console.error("Jira API asUser error:", text);
+      return null;
+    }
+    return JSON.parse(text);
+  } catch (err) {
+    console.error("Exception calling Jira API asUser:", err);
+    return null;
+  }
+}
+
+// --- Get issues by projectKey or sprintId ---
+resolver.define("getIssues", async ({ payload }) => {
+  const { projectKey, sprintId } = payload;
+  let url;
+  let data;
 
   if (sprintId) {
-    // Fetch issues for a sprint
-    response = await api.asApp().requestJira(
-      route`/rest/agile/1.0/sprint/${sprintId}/issue?fields=summary,status,customfield_10106&expand=changelog`
-    );
+    // Always fetch changelog for accurate burndown
+    url = route`/rest/agile/1.0/sprint/${sprintId}/issue?fields=summary,status,customfield_10106&expand=changelog`;
+    data = await callJiraAsApp(url);
+    return data?.issues || [];
   } else if (projectKey) {
-    // Fetch issues for a project (Jira standard search)
-    response = await api.asApp().requestJira(
-      route`/rest/api/3/search/jql?jql=project=${projectKey}&fields=summary,status,customfield_10106&expand=changelog`
-    );
+    url = route`/rest/api/3/search/jql?jql=project=${projectKey}&fields=summary,status,customfield_10106&expand=changelog`;
+    data = await callJiraAsApp(url);
 
-  } else {
-    // If neither is provided, return empty
-    return [];
-  }
-  if (!response.ok) {
-  	  text = await response.text();
-	  console.error("Jira API error:", text);
-	  throw new Error(`Jira request failed: ${response.status}`);
+    // Retry as user if app cannot see all issues
+    if (!data) {
+      console.log("Retrying getIssues as user due to app visibility issues...");
+      data = await callJiraAsUser(url);
+    }
+
+    return data?.issues || [];
   }
 
-  const data = await response.json();
-
-  console.log("Full Jira response:", data);
-
-  // Return issues safely
-  return data.issues || [];
+  return [];
 });
 
+// --- Get boards by projectKey ---
 resolver.define("getBoards", async ({ payload }) => {
   const { projectKey } = payload;
+  const url = route`/rest/agile/1.0/board?projectKeyOrId=${projectKey}&type=scrum`;
 
-  const response = await api.asApp().requestJira(
-    route`/rest/agile/1.0/board?projectKeyOrId=${projectKey}&type=scrum`
-  );
-
-  if (!response.ok) {
-    const error = await response.text();
-    console.error("getBoards Jira API error:", error);
-    return [];
-  }
-
-  const data = await response.json();
-  return data.values || [];
+  const data = await callJiraAsApp(url);
+  return data?.values || [];
 });
 
-// --- NEW: getSprints resolver ---
+// --- Get sprints by boardId ---
 resolver.define("getSprints", async ({ payload }) => {
   const { boardId } = payload;
+  const url = route`/rest/agile/1.0/board/${boardId}/sprint`;
 
-  const response = await api.asApp().requestJira(
-    route`/rest/agile/1.0/board/${boardId}/sprint`
-  );
+  const data = await callJiraAsApp(url);
 
-  if (!response.ok) {
-    const error = await response.text();
-    console.error("getSprints Jira API error:", error);
-    return [];
-  }
+  // Sort sprints by startDate for consistent dropdown
+  const sprints = (data?.values || []).sort((a, b) => {
+    if (!a.startDate) return 1;
+    if (!b.startDate) return -1;
+    return new Date(a.startDate) - new Date(b.startDate);
+  });
 
-  const data = await response.json();
-  return data.values || [];
+  return sprints;
 });
 
-resolver.define('getText', (req) => {
+// --- Simple test endpoint ---
+resolver.define("getText", (req) => {
   console.log(req);
-  return 'Hello world!';
+  return "Hello world!";
 });
 
 export const handler = resolver.getDefinitions();

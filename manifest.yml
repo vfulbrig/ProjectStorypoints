@@ -21,6 +21,7 @@ permissions:
     - read:jql:jira
     - read:board-scope:jira-software
     - read:project:jira
+    - write:jira-work
 app:
   runtime:
     name: nodejs24.x
