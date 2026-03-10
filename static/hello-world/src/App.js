@@ -29,6 +29,7 @@ function App() {
   const [sprints, setSprints] = useState([]);
   const [selectedSprint, setSelectedSprint] = useState("");
   const [selectedUser, setSelectedUser] = useState("");
+  const [scope, setScope] = useState("sprint"); // new: sprint/project scope
   const [issues, setIssues] = useState([]);
   const [projectIssues, setProjectIssues] = useState([]);
   const [analytics, setAnalytics] = useState(null);
@@ -189,19 +190,26 @@ function App() {
   };
 
   /* ---------------- Sprint Burndown (Team) ---------------- */
-  const sprintDates = getSprintDates(sprints.find((s) => s.id.toString() === selectedSprint));
+  const sprintDates = getSprintDates(sprints.find(s => s.id.toString() === selectedSprint));
+
   const teamBurndownChart = analytics
     ? {
-        labels: sprintDates.map((d) => d.toISOString().split("T")[0]),
+        labels: sprintDates.map(d => d.toISOString().split("T")[0]),
         datasets: [
           {
-            label: "Team Sprint Burndown",
+            label: "Actual Burndown",
+            data: computeBurndown(issues, storyPointsField).data,
+            borderColor: "rgb(255,99,132)",
+            tension: 0.3
+          },
+          {
+            label: "Ideal Burndown",
             data: sprintDates.map((_, i) => {
               const total = Object.values(analytics.memberBurnSprint || {}).reduce((a, b) => a + b, 0);
-              const ideal = analytics.teamAverageSprintBurn || 0;
               return Math.max(total - (i * total) / (sprintDates.length - 1), 0);
             }),
-            borderColor: "rgb(255,99,132)",
+            borderColor: "rgb(54,162,235)",
+            borderDash: [5, 5],
             tension: 0.3
           }
         ]
@@ -209,23 +217,49 @@ function App() {
     : null;
 
   /* ---------------- Developer Burndown ---------------- */
-  const developerBurndownChart = analytics && selectedUser
-    ? {
-        labels: sprintDates.map((d) => d.toISOString().split("T")[0]),
-        datasets: [
-          {
-            label: selectedUser,
-            data: sprintDates.map((_, i) => {
-              const total = analytics.memberBurnSprint[selectedUser] || 0;
-              const avg = analytics.memberAverageSprintBurn[selectedUser] || 0;
-              return Math.max(total - (i * total) / (sprintDates.length - 1), 0);
-            }),
-            borderColor: "rgb(75,192,192)",
-            tension: 0.3
-          }
-        ]
-      }
-    : null;
+  let devLabels = [];
+  let devActual = [];
+  let devAverage = [];
+
+  if (analytics && selectedUser) {
+    if (scope === "project") {
+      devLabels = projectSeries.labels;
+      devActual = projectSeries.data.map((_, i) => {
+        const total = analytics.memberBurnAllTime[selectedUser] || 0;
+        return Math.max(total - (i * total) / (devLabels.length - 1), 0);
+      });
+      devAverage = projectSeries.data.map(() => analytics.memberAverageSprintBurn[selectedUser] || 0);
+    } else {
+      devLabels = sprintDates.map(d => d.toISOString().split("T")[0]);
+      devActual = devLabels.map((_, i) => {
+        const total = analytics.memberBurnSprint[selectedUser] || 0;
+        return Math.max(total - (i * total) / (devLabels.length - 1), 0);
+      });
+      devAverage = devLabels.map(() => analytics.memberAverageSprintBurn[selectedUser] || 0);
+    }
+  }
+
+  const developerBurndownChart =
+    devLabels.length > 0
+      ? {
+          labels: devLabels,
+          datasets: [
+            {
+              label: "Actual Burn",
+              data: devActual,
+              borderColor: "rgb(75,192,192)",
+              tension: 0.3
+            },
+            {
+              label: "Average Burn",
+              data: devAverage,
+              borderColor: "rgb(255,159,64)",
+              borderDash: [5, 5],
+              tension: 0.3
+            }
+          ]
+        }
+      : null;
 
   /* ---------------- UI ---------------- */
   return (
@@ -239,7 +273,7 @@ function App() {
 
       <br/>
 
-      {/* Sprint selector below project burndown */}
+      {/* Sprint selector */}
       {sprints.length > 0 && (
         <div>
           <label><b>Select Sprint:</b></label><br/>
@@ -265,13 +299,19 @@ function App() {
         <div>
           <label><b>Select Developer:</b></label><br/>
           <select value={selectedUser} onChange={(e) => setSelectedUser(e.target.value)}>
-            {Object.keys(analytics.memberBurnSprint).map((user) => (
+            {Object.keys(analytics.memberBurnAllTime).map((user) => (
               <option key={user} value={user}>{user}</option>
             ))}
           </select>
+          <br/><br/>
+          <label><b>Scope:</b></label><br/>
+          <select value={scope} onChange={(e) => setScope(e.target.value)}>
+            <option value="sprint">Current Sprint</option>
+            <option value="project">Whole Project</option>
+          </select>
         </div>
       )}
-      {developerBurndownChart && <div style={{ width: "750px" }}><Line data={developerBurndownChart} /></div>}
+      {developerBurndownChart && <div style={{ width: "750px", marginTop: "10px" }}><Line data={developerBurndownChart} /></div>}
     </div>
   );
 }

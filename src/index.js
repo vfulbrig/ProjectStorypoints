@@ -82,7 +82,7 @@ function extractBurnEvents(issues, sprintId = null) {
     const sp = issue.fields?.[STORY_POINTS_FIELD];
     if (!sp) return;
 
-    const assignee = issue.fields?.assignee?.accountId || "unassigned";
+    const assignee = issue.fields?.assignee?.displayName || "unassigned";
 
     issue.changelog?.histories?.forEach(history => {
       history.items.forEach(item => {
