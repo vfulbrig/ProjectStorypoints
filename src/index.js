@@ -3,6 +3,7 @@ import api, { route } from '@forge/api';
 
 const resolver = new Resolver();
 const STORY_POINTS_FIELD = "customfield_10106";
+const SPRINT_FIELD = "customfield_10020";
 
 /* ------------------------------------------------ */
 /* Jira API Utilities */
@@ -55,7 +56,7 @@ async function fetchAllProjectIssues(projectKey) {
   let total = 0;
 
   do {
-    const url = route`/rest/api/3/search/jql?jql=project="${projectKey}"&startAt=${startAt}&maxResults=${maxResults}&fields=summary,status,assignee,fixVersions,created,${STORY_POINTS_FIELD}&expand=changelog`;
+    const url = route`/rest/api/3/search/jql?jql=project="${projectKey}"&startAt=${startAt}&maxResults=${maxResults}&fields=summary,status,assignee,fixVersions,created,resolutiondate,${STORY_POINTS_FIELD},customfield_10020&expand=changelog`;
     let data = await callJiraAsApp(url);
     if (!data) {
       data = await callJiraAsUser(url);
@@ -80,26 +81,66 @@ function extractBurnEvents(issues, sprintId = null) {
 
   issues.forEach(issue => {
     const sp = issue.fields?.[STORY_POINTS_FIELD];
-    if (!sp) return;
+    if (sp == null) return;
 
-    const assignee = issue.fields?.assignee?.displayName || "unassigned";
+    const assignee = issue.fields?.assignee?.displayName;
+    if (!assignee) return; // skip issues with no assignee
 
+    // Get sprint data from your field
+    const sprintField = issue.fields?.[SPRINT_FIELD] || [];
+
+    // Normalize Jira’s sprint data (array or single object)
+    const sprints = Array.isArray(sprintField) ? sprintField : [sprintField];
+
+    const sprintIds = sprints.map(s => s.id);
+
+    // Skip backlog issues
+    if (sprintIds.length === 0) return;
+
+    // Filter to the selected sprint if provided
+    if (sprintId && !sprintIds.includes(sprintId)) return;
+
+    // Find the first time it moved to "Done"
+    let doneDate = null;
     issue.changelog?.histories?.forEach(history => {
       history.items.forEach(item => {
         if (item.field === "status" && item.toString === "Done") {
-          events.push({
-            issueKey: issue.key,
-            assignee,
-            storyPoints: sp,
-            sprintId,
-            completedDate: history.created
-          });
+          if (!doneDate || new Date(history.created) < new Date(doneDate)) {
+            doneDate = history.created;
+          }
         }
       });
     });
+
+    // Only push completed issues
+    if (doneDate) {
+      events.push({
+        issueKey: issue.key,
+        assignee,                // guaranteed to be a real Jira user
+        storyPoints: sp,
+        sprintId: sprintId || sprintIds[0],
+        completedDate: doneDate
+      });
+    }
   });
 
   return events;
+}
+
+/* ------------------------------------------------ */
+/* Get ALL assignees (for member burndown) */
+/* ------------------------------------------------ */
+
+
+function getAllAssignees(issues) {
+  const set = new Set();
+
+  issues.forEach(issue => {
+    const name = issue.fields?.assignee?.displayName;
+    if (name) set.add(name);
+  });
+
+  return Array.from(set);
 }
 
 /* ------------------------------------------------ */
@@ -173,7 +214,7 @@ function filterByMilestone(events, issues, milestone) {
 resolver.define("getIssues", async ({ payload }) => {
   const { projectKey, sprintId } = payload;
   if (sprintId) {
-    const url = route`/rest/agile/1.0/sprint/${sprintId}/issue?fields=summary,status,created,assignee,fixVersions,${STORY_POINTS_FIELD}&expand=changelog&maxResults=100`;
+    const url = route`/rest/agile/1.0/sprint/${sprintId}/issue?fields=summary,status,assignee,fixVersions,created,resolutiondate,${STORY_POINTS_FIELD},customfield_10020&expand=changelog&maxResults=100`;
     const data = await callJiraAsApp(url);
     return data?.issues || [];
   }
@@ -211,6 +252,8 @@ resolver.define("getBurnAnalytics", async ({ payload }) => {
 
   let events = extractBurnEvents(issues, sprintId);
 
+  
+
   if (milestone) events = filterByMilestone(events, issues, milestone);
 
   return {
@@ -218,12 +261,12 @@ resolver.define("getBurnAnalytics", async ({ payload }) => {
     teamAverageSprintBurn: teamAverageBurnPerSprint(events),
     memberBurnAllTime: memberBurnAllTime(events),
     teamBurnAllTime: teamBurnAllTime(events),
-    memberBurnSprint: memberBurnForSprint(events, sprintId)
+    memberBurnSprint: memberBurnForSprint(events, sprintId),
+	allAssignees: getAllAssignees(issues)
   };
 });
 
-/* ------------------------------------------------ */
 
-resolver.define("getText", () => "Hello world!");
+/* ------------------------------------------------ */
 
 export const handler = resolver.getDefinitions();

@@ -23,26 +23,101 @@ ChartJS.register(
   Legend
 );
 
+
+
 function App() {
   const [projectKey, setProjectKey] = useState("");
   const [boards, setBoards] = useState([]);
   const [sprints, setSprints] = useState([]);
   const [selectedSprint, setSelectedSprint] = useState("");
   const [selectedUser, setSelectedUser] = useState("");
-  const [scope, setScope] = useState("sprint"); // new: sprint/project scope
+  const [scope, setScope] = useState("sprint");
   const [issues, setIssues] = useState([]);
   const [projectIssues, setProjectIssues] = useState([]);
   const [analytics, setAnalytics] = useState(null);
+  const [devSprint, setDevSprint] = useState("");
+
+  const [showProject, setShowProject] = useState(true);
+  const [showProjectVelocity, setShowProjectVelocity] = useState(false);
+  const [showDevVelocity, setShowDevVelocity] = useState(false);
+  const [showFullProject, setShowFullProject] = useState(false);
 
   const storyPointsField = "customfield_10106";
 
-  /* ---------------- Jira Context ---------------- */
+  function stripTime(date) {
+    const d = new Date(date);
+    d.setHours(0, 0, 0, 0);
+    return d;
+  }
+
+  function buildIdealBurndown(labels, totalPoints) {
+    const days = labels.length;
+    return labels.map((_, i) => Math.max(totalPoints - (i * totalPoints) / (days - 1), 0));
+  }
+
+  function computeBurndown(issues, spField, startDate, endDate) {
+    if (!issues.length || !startDate) return { labels: [], data: [] };
+
+    const start = new Date(startDate);
+    const end = new Date(endDate || new Date());
+
+    const labels = [];
+    const data = [];
+
+    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+      let totalAdded = 0;
+      let totalCompleted = 0;
+
+      issues.forEach(issue => {
+        const sp = issue.fields?.[spField] || 0;
+        const created = new Date(issue.fields.created);
+        const resolved = issue.fields?.resolutiondate ? new Date(issue.fields.resolutiondate) : null;
+
+        if (created <= d) totalAdded += sp;
+        if (resolved && resolved <= d) totalCompleted += sp;
+      });
+
+      labels.push(d.toISOString().split("T")[0]);
+      data.push(Math.max(totalAdded - totalCompleted, 0));
+    }
+
+    return { labels, data };
+  }
+
+  function computeVelocity(data) {
+    const velocity = [];
+    for (let i = 1; i < data.length; i++) {
+      velocity.push(data[i - 1] - data[i]);
+    }
+    return [0, ...velocity];
+  }
+
+  /* ---------------- Init & Load ---------------- */
+  useEffect(() => {
+    async function init() {
+      const key = await getProjectKey();
+      setProjectKey(key);
+
+      const boardList = await getBoards(key);
+      setBoards(boardList);
+
+      if (boardList.length) {
+        const sprintList = await getSprints(boardList[0].id);
+        setSprints(sprintList);
+        if (sprintList.length) {
+          setSelectedSprint(sprintList[0].id.toString());
+          setDevSprint(sprintList[0].id.toString());
+        }
+      }
+    }
+    init();
+  }, []);
+
   async function getProjectKey() {
     const context = await view.getContext();
     return context.extension.project.key;
   }
 
-  /* ---------------- API calls ---------------- */
   async function getBoards(projectKey) {
     return await invoke("getBoards", { projectKey });
   }
@@ -59,100 +134,6 @@ function App() {
     return await invoke("getBurnAnalytics", { projectKey, sprintId });
   }
 
-  /* ---------------- Helpers ---------------- */
-  function stripTime(date) {
-    const d = new Date(date);
-    d.setHours(0, 0, 0, 0);
-    return d;
-  }
-
-  function getSprintDates(sprint) {
-    if (!sprint?.startDate) return [];
-    const start = stripTime(sprint.startDate);
-    const end = stripTime(sprint.endDate || new Date());
-    const dates = [];
-    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-      dates.push(new Date(d));
-    }
-    return dates;
-  }
-
-  function buildProjectTimeline(issues, spField) {
-    const events = [];
-
-    issues.forEach((issue) => {
-      const created = new Date(issue.fields.created);
-      const sp = issue.fields?.[spField] || 0;
-
-      events.push({ date: created, type: "add", value: sp });
-
-      issue.changelog?.histories?.forEach((h) => {
-        const date = new Date(h.created);
-        h.items.forEach((item) => {
-          if (item.field === "Story Points") {
-            const oldVal = Number(item.fromString) || 0;
-            const newVal = Number(item.toString) || 0;
-            events.push({ date, type: "sp-change", value: newVal - oldVal });
-          }
-          if (item.field === "status" && item.toString === "Done") {
-            events.push({ date, type: "complete", value: sp });
-          }
-          if (item.field === "status" && item.fromString === "Done") {
-            events.push({ date, type: "reopen", value: sp });
-          }
-        });
-      });
-    });
-
-    return events.sort((a, b) => a.date - b.date);
-  }
-
-  function computeBurndown(issues, spField) {
-    if (!issues.length) return { labels: [], data: [] };
-    const timeline = buildProjectTimeline(issues, spField);
-
-    const start = new Date(Math.min(...issues.map((i) => new Date(i.fields.created))));
-    const end = new Date();
-
-    const labels = [];
-    const data = [];
-
-    let remainingPoints = 0;
-
-    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-      timeline
-        .filter((e) => new Date(e.date).toDateString() === d.toDateString())
-        .forEach((e) => {
-          if (e.type === "add" || e.type === "sp-change") remainingPoints += e.value;
-          if (e.type === "complete") remainingPoints -= e.value;
-          if (e.type === "reopen") remainingPoints += e.value;
-        });
-      labels.push(d.toISOString().split("T")[0]);
-      data.push(Math.max(remainingPoints, 0));
-    }
-
-    return { labels, data };
-  }
-
-  /* ---------------- Init project ---------------- */
-  useEffect(() => {
-    async function init() {
-      const key = await getProjectKey();
-      setProjectKey(key);
-
-      const boardList = await getBoards(key);
-      setBoards(boardList);
-
-      if (boardList.length) {
-        const sprintList = await getSprints(boardList[0].id);
-        setSprints(sprintList);
-        if (sprintList.length) setSelectedSprint(sprintList[0].id.toString());
-      }
-    }
-    init();
-  }, []);
-
-  /* ---------------- Load sprint data ---------------- */
   useEffect(() => {
     if (!selectedSprint) return;
 
@@ -163,103 +144,98 @@ function App() {
       const projectAll = await invoke("getIssues", { projectKey });
       setProjectIssues(projectAll);
 
-      const data = await getAnalytics(projectKey, selectedSprint);
+      const data = await getAnalytics(projectKey, scope === "sprint" ? devSprint : undefined);
       setAnalytics(data);
 
-      if (data?.memberBurnSprint) {
-        const users = Object.keys(data.memberBurnSprint);
-        if (users.length && !selectedUser) setSelectedUser(users[0]);
+      if (data?.allAssignees && !selectedUser) {
+        const topUser = Object.entries(data.memberBurnAllTime || {}).sort((a, b) => b[1] - a[1])[0]?.[0];
+        setSelectedUser(topUser || data.allAssignees[0]);
       }
     }
 
     loadData();
-  }, [selectedSprint, projectKey]);
+  }, [selectedSprint, projectKey, devSprint, scope]);
 
-  /* ---------------- Project Burndown Chart ---------------- */
-  const projectSeries = computeBurndown(projectIssues, storyPointsField);
-  const projectBurndownChart = {
-    labels: projectSeries.labels,
-    datasets: [
-      {
-        label: "Project Remaining Story Points",
-        data: projectSeries.data,
-        borderColor: "rgb(54,162,235)",
-        tension: 0.3
-      }
-    ]
-  };
+  /* ---------------- Build Chart ---------------- */
+  const activeSprint = sprints.find(s => s.id.toString() === selectedSprint);
 
-  /* ---------------- Sprint Burndown (Team) ---------------- */
-  const sprintDates = getSprintDates(sprints.find(s => s.id.toString() === selectedSprint));
 
-  const teamBurndownChart = analytics
-    ? {
-        labels: sprintDates.map(d => d.toISOString().split("T")[0]),
-        datasets: [
-          {
-            label: "Actual Burndown",
-            data: computeBurndown(issues, storyPointsField).data,
-            borderColor: "rgb(255,99,132)",
-            tension: 0.3
-          },
-          {
-            label: "Ideal Burndown",
-            data: sprintDates.map((_, i) => {
-              const total = Object.values(analytics.memberBurnSprint || {}).reduce((a, b) => a + b, 0);
-              return Math.max(total - (i * total) / (sprintDates.length - 1), 0);
-            }),
-            borderColor: "rgb(54,162,235)",
-            borderDash: [5, 5],
-            tension: 0.3
-          }
-        ]
-      }
+  const devIssues = selectedUser
+    ? issues.filter(issue => issue.fields?.assignee?.displayName === selectedUser)
+    : issues;
+
+
+  const sprintStart = activeSprint?.startDate;
+  const sprintEnd = activeSprint?.endDate || new Date();
+
+  const devBurndown = computeBurndown(devIssues, storyPointsField, sprintStart, sprintEnd);
+  const devTotalPoints = devIssues.reduce((sum, i) => sum + (i.fields?.[storyPointsField] || 0), 0);
+  const idealDev = buildIdealBurndown(devBurndown.labels, devTotalPoints);
+
+  const sprintProjectBurndown = computeBurndown(issues, storyPointsField, sprintStart, sprintEnd);
+  const devVelocity = computeVelocity(devBurndown.data);
+  const projectVelocity = computeVelocity(sprintProjectBurndown.data);
+
+
+  const firstSprintStart = sprints.length
+    ? sprints.reduce((min, s) => new Date(s.startDate) < new Date(min) ? s.startDate : min, sprints[0].startDate)
     : null;
 
-  /* ---------------- Developer Burndown ---------------- */
-  let devLabels = [];
-  let devActual = [];
-  let devAverage = [];
+  const fullProjectBurndown = computeBurndown(projectIssues, storyPointsField, firstSprintStart, new Date());
 
-  if (analytics && selectedUser) {
-    if (scope === "project") {
-      devLabels = projectSeries.labels;
-      devActual = projectSeries.data.map((_, i) => {
-        const total = analytics.memberBurnAllTime[selectedUser] || 0;
-        return Math.max(total - (i * total) / (devLabels.length - 1), 0);
-      });
-      devAverage = projectSeries.data.map(() => analytics.memberAverageSprintBurn[selectedUser] || 0);
-    } else {
-      devLabels = sprintDates.map(d => d.toISOString().split("T")[0]);
-      devActual = devLabels.map((_, i) => {
-        const total = analytics.memberBurnSprint[selectedUser] || 0;
-        return Math.max(total - (i * total) / (devLabels.length - 1), 0);
-      });
-      devAverage = devLabels.map(() => analytics.memberAverageSprintBurn[selectedUser] || 0);
+  const fullLabels = fullProjectBurndown.labels;
+	const sprintDataMapped = fullLabels.map(label => {
+	  const idx = sprintProjectBurndown.labels.indexOf(label);
+	  return idx !== -1 ? sprintProjectBurndown.data[idx] : null;
+	});
+
+  const datasets = [
+    {
+      label: selectedUser ? `${selectedUser} Remaining` : "Developer Remaining",
+      data: devBurndown.data,
+      borderColor: "rgb(54,162,235)",
+      tension: 0.3
+    },
+    {
+      label: "Ideal Burndown",
+      data: idealDev,
+      borderColor: "rgb(255,99,132)",
+      borderDash: [5, 5],
+      tension: 0.3
+    },
+    showProject && {
+      label: "Sprint Project Remaining",
+      data: sprintDataMapped,
+      borderColor: "rgb(0,200,100)",
+      tension: 0.3
+    },
+    showProjectVelocity && {
+      label: "Project Avg Velocity",
+      data: projectVelocity,
+      borderColor: "rgb(255,165,0)",
+      borderDash: [3, 3],
+      tension: 0.3
+    },
+    showDevVelocity && {
+      label: "Developer Avg Velocity",
+      data: devVelocity,
+      borderColor: "rgb(128,0,128)",
+      borderDash: [3, 3],
+      tension: 0.3
+    },
+    showFullProject && {
+      label: "Full Project Burndown",
+      data: fullProjectBurndown.data,
+      borderColor: "rgb(0,0,0)",
+      borderDash: [2, 2],
+      tension: 0.3
     }
-  }
+  ].filter(Boolean);
 
-  const developerBurndownChart =
-    devLabels.length > 0
-      ? {
-          labels: devLabels,
-          datasets: [
-            {
-              label: "Actual Burn",
-              data: devActual,
-              borderColor: "rgb(75,192,192)",
-              tension: 0.3
-            },
-            {
-              label: "Average Burn",
-              data: devAverage,
-              borderColor: "rgb(255,159,64)",
-              borderDash: [5, 5],
-              tension: 0.3
-            }
-          ]
-        }
-      : null;
+  const chartData = {
+    labels: fullLabels,
+    datasets
+  };
 
   /* ---------------- UI ---------------- */
   return (
@@ -267,51 +243,36 @@ function App() {
       <h2>Project Analytics Dashboard</h2>
       <p><b>Project:</b> {projectKey}</p>
 
-      {/* Project Burndown */}
-      <h3>Project Burndown</h3>
-      {projectBurndownChart && <div style={{ width: "750px" }}><Line data={projectBurndownChart} /></div>}
+      <div style={{ marginBottom: "20px" }}>
+        <label><b>Assignee:</b> </label>
+        <select value={selectedUser} onChange={(e) => setSelectedUser(e.target.value)}>
+          <option value="">All Users</option>
+          {analytics?.allAssignees?.map(user => (
+            <option key={user} value={user}>{user}</option>
+          ))}
+        </select>
+      </div>
 
-      <br/>
+      <div style={{ marginBottom: "20px" }}>
+        <label><b>Sprint:</b> </label>
+        <select value={selectedSprint} onChange={(e) => setSelectedSprint(e.target.value)}>
+          {sprints.map(s => (
+            <option key={s.id} value={s.id}>{s.name}</option>
+          ))}
+        </select>
+      </div>
 
-      {/* Sprint selector */}
-      {sprints.length > 0 && (
-        <div>
-          <label><b>Select Sprint:</b></label><br/>
-          <select value={selectedSprint} onChange={(e) => setSelectedSprint(e.target.value)}>
-            {sprints.map((s) => (
-              <option key={s.id} value={s.id}>{s.name}</option>
-            ))}
-          </select>
-        </div>
-      )}
+      <div style={{ marginBottom: "20px" }}>
+        <label><input type="checkbox" checked={showProject} onChange={() => setShowProject(!showProject)} /> Show Sprint Burndown</label><br/>
+        <label><input type="checkbox" checked={showProjectVelocity} onChange={() => setShowProjectVelocity(!showProjectVelocity)} /> Show Project Velocity</label><br/>
+        <label><input type="checkbox" checked={showDevVelocity} onChange={() => setShowDevVelocity(!showDevVelocity)} /> Show Developer Velocity</label><br/>
+        <label><input type="checkbox" checked={showFullProject} onChange={() => setShowFullProject(!showFullProject)} /> Show Full Project Burndown</label>
+      </div>
 
-      <br/>
-
-      {/* Team Sprint Burndown */}
-      <h3>Team Sprint Burndown</h3>
-      {teamBurndownChart && <div style={{ width: "750px" }}><Line data={teamBurndownChart} /></div>}
-
-      <br/>
-
-      {/* Developer Burndown */}
-      <h3>Developer Burndown</h3>
-      {analytics?.memberBurnSprint && (
-        <div>
-          <label><b>Select Developer:</b></label><br/>
-          <select value={selectedUser} onChange={(e) => setSelectedUser(e.target.value)}>
-            {Object.keys(analytics.memberBurnAllTime).map((user) => (
-              <option key={user} value={user}>{user}</option>
-            ))}
-          </select>
-          <br/><br/>
-          <label><b>Scope:</b></label><br/>
-          <select value={scope} onChange={(e) => setScope(e.target.value)}>
-            <option value="sprint">Current Sprint</option>
-            <option value="project">Whole Project</option>
-          </select>
-        </div>
-      )}
-      {developerBurndownChart && <div style={{ width: "750px", marginTop: "10px" }}><Line data={developerBurndownChart} /></div>}
+      <h3>Burndown Chart</h3><br/>
+      <div style={{ width: "900px" }}>
+        <Line data={chartData} />
+      </div>
     </div>
   );
 }
