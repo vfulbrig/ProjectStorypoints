@@ -5,9 +5,6 @@ const resolver = new Resolver();
 const STORY_POINTS_FIELD = "customfield_10106";
 const SPRINT_FIELD = "customfield_10020";
 
-/* ------------------------------------------------ */
-/* Jira API Utilities */
-/* ------------------------------------------------ */
 
 async function callJiraAsApp(url) {
   try {
@@ -45,9 +42,7 @@ async function callJiraAsUser(url) {
   }
 }
 
-/* ------------------------------------------------ */
-/* Fetch ALL project issues with pagination */
-/* ------------------------------------------------ */
+
 
 async function fetchAllProjectIssues(projectKey) {
   let startAt = 0;
@@ -72,9 +67,7 @@ async function fetchAllProjectIssues(projectKey) {
   return issues;
 }
 
-/* ------------------------------------------------ */
-/* Extract burn events */
-/* ------------------------------------------------ */
+
 
 function extractBurnEvents(issues, sprintId = null) {
   const events = [];
@@ -84,23 +77,22 @@ function extractBurnEvents(issues, sprintId = null) {
     if (sp == null) return;
 
     const assignee = issue.fields?.assignee?.displayName;
-    if (!assignee) return; // skip issues with no assignee
+    if (!assignee) return; 
 
-    // Get sprint data from your field
+
     const sprintField = issue.fields?.[SPRINT_FIELD] || [];
 
-    // Normalize Jira’s sprint data (array or single object)
+
     const sprints = Array.isArray(sprintField) ? sprintField : [sprintField];
 
     const sprintIds = sprints.map(s => s.id);
 
-    // Skip backlog issues
+
     if (sprintIds.length === 0) return;
 
-    // Filter to the selected sprint if provided
     if (sprintId && !sprintIds.includes(sprintId)) return;
 
-    // Find the first time it moved to "Done"
+   
     let doneDate = null;
     issue.changelog?.histories?.forEach(history => {
       history.items.forEach(item => {
@@ -112,11 +104,11 @@ function extractBurnEvents(issues, sprintId = null) {
       });
     });
 
-    // Only push completed issues
+   
     if (doneDate) {
       events.push({
         issueKey: issue.key,
-        assignee,                // guaranteed to be a real Jira user
+        assignee,               
         storyPoints: sp,
         sprintId: sprintId || sprintIds[0],
         completedDate: doneDate
@@ -127,9 +119,6 @@ function extractBurnEvents(issues, sprintId = null) {
   return events;
 }
 
-/* ------------------------------------------------ */
-/* Get ALL assignees (for member burndown) */
-/* ------------------------------------------------ */
 
 
 function getAllAssignees(issues) {
@@ -143,9 +132,7 @@ function getAllAssignees(issues) {
   return Array.from(set);
 }
 
-/* ------------------------------------------------ */
-/* Analytics calculations */
-/* ------------------------------------------------ */
+
 
 function memberAverageBurnPerSprint(events) {
   const map = {};
@@ -207,9 +194,7 @@ function filterByMilestone(events, issues, milestone) {
   return events.filter(e=>milestoneIssues.includes(e.issueKey));
 }
 
-/* ------------------------------------------------ */
-/* Existing Endpoints */
-/* ------------------------------------------------ */
+
 
 resolver.define("getIssues", async ({ payload }) => {
   const { projectKey, sprintId } = payload;
@@ -241,9 +226,7 @@ resolver.define("getSprints", async ({ payload }) => {
   return sprints;
 });
 
-/* ------------------------------------------------ */
-/* New Analytics Endpoint */
-/* ------------------------------------------------ */
+
 
 resolver.define("getBurnAnalytics", async ({ payload }) => {
   const { projectKey, sprintId, milestone } = payload;
@@ -267,6 +250,6 @@ resolver.define("getBurnAnalytics", async ({ payload }) => {
 });
 
 
-/* ------------------------------------------------ */
+
 
 export const handler = resolver.getDefinitions();

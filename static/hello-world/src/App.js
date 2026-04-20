@@ -233,7 +233,7 @@ function App() {
   ].filter(Boolean);
 
   const chartData = {
-    labels: fullLabels,
+    labels: devBurndown.labels,
     datasets
   };
 
