@@ -184,8 +184,8 @@ function App() {
 
   const sprintStart = activeSprint?.startDate;
   const sprintEnd = activeSprint?.endDate || new Date();
-  const customStartDate = new Date("2026-02-03");
-  const customEndDate = new Date("2026-03-18");
+  let customStartDate = new Date("2026-02-03");
+  let customEndDate = new Date("2026-03-18");
 
   const devBurndown = computeBurndown(devIssues, storyPointsField, sprintStart, sprintEnd);
   const devBurndown2 = computeBurndown(devIssues2, storyPointsField, customStartDate, customEndDate);
@@ -207,9 +207,13 @@ function App() {
     : null;
 	
   function setCustomDates(){
-	customStartDate = document.getElementById('start').value; 
-	customEndDate = document.getElementById('start').value;
+	customStartDate = document.getElementById("start").valueAsDate ;
+	customEndDate = document.getElementById("end").valueAsDate;
   }
+  window.addEventListener("DOMContentLoaded", () => {
+  document.getElementById("start").addEventListener("change", setCustomDates);
+  document.getElementById("end").addEventListener("change", setCustomDates);
+  });
 
   const fullProjectBurndown = computeBurndown(projectIssues, storyPointsField, firstSprintStart, new Date());
   const fullProjectBurndown2 = computeBurndown(projectIssues, storyPointsField, customStartDate, customEndDate);
@@ -389,9 +393,8 @@ function App() {
 	  
 	  <div style={{ marginBottom: "40px" }}>
         <label><b>Custom Dates:</b> </label>
-		<input type="date" id="start" name="Project Start" value="2026-02-03">
-		<input type="date" id="end" name="Project End" value="2026-03-16">
-		<button onclick='setCustomDates()'>Submit</button>
+		<input type="date" id="start" name="Project Start" value = "2026-02-03" />
+		<input type="date" id="end" name="Project End" value = "2026-03-16" />
 
       </div>
 	  
