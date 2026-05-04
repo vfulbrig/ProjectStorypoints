@@ -10,6 +10,8 @@
   },
   "dependencies": {
     "@forge/api": "^7.1.0",
-    "@forge/resolver": "^1.7.1"
+    "@forge/resolver": "^1.7.1",
+    "html2canvas": "^1.4.1",
+    "jspdf": "^4.2.1"
   }
 }
